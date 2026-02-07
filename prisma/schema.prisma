@@ -1,0 +1,50 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  // provider = "postgresql"
+}
+
+// enum CleaningType {
+//   DESCALING
+//   DEGREASING
+//   COMPLEX
+// }
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  cleanings Cleaning[]
+
+  @@map("users")
+}
+
+model Cleaning {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  cleaningDate DateTime @map("cleaning_date") // @db.Date
+  // cleaningType CleaningType @map("cleaning_type")
+  cleaningType String   @map("cleaning_type")
+  notes        String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cleaningDate, cleaningType])
+  @@index([cleaningType, cleaningDate(sort: Desc)])
+  @@index([userId])
+  @@map("cleanings")
+}
