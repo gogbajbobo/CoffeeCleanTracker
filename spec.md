@@ -1461,3 +1461,772 @@ docker-compose up -d --build
 | Стили, полировка, edge-cases    | 3–4 ч                   |
 | Docker, деплой                  | 2–3 ч                   |
 | **Итого**                       | **~20–28 ч (~3–4 дня)** |
+
+---
+
+# Аудит файлов: что есть, чего не хватает
+
+Я прошёлся по всей структуре из раздела 3 и сверил с кодом в спецификации. Вот результат:
+
+## Сводная таблица
+
+| Файл                                          | Код есть? | Нужен? |
+| --------------------------------------------- | :-------: | :----: |
+| `prisma/schema.prisma`                        | ✅ р.4.1  |   —    |
+| `prisma/seed.ts`                              |    ❌     |   ✅   |
+| `server/api/auth/register.post.ts`            | ✅ р.6.3  |   —    |
+| `server/api/auth/login.post.ts`               | ✅ р.6.3  |   —    |
+| `server/api/auth/logout.post.ts`              | ✅ р.6.3  |   —    |
+| `server/api/cleanings/index.get.ts`           | ✅ р.6.3  |   —    |
+| `server/api/cleanings/index.post.ts`          | ✅ р.6.3  |   —    |
+| **`server/api/cleanings/[id].get.ts`**        |    ❌     |   ✅   |
+| `server/api/cleanings/[id].put.ts`            | ✅ р.6.3  |   —    |
+| `server/api/cleanings/[id].delete.ts`         | ✅ р.6.3  |   —    |
+| `server/api/statistics/summary.get.ts`        | ✅ р.6.3  |   —    |
+| **`server/api/statistics/prediction.get.ts`** |    ❌     |   ✅   |
+| `server/middleware/auth.ts`                   | ✅ р.6.2  |   —    |
+| `server/utils/db.ts`                          | ✅ р.6.1  |   —    |
+| **`server/utils/auth.ts`**                    |    ❌     |   ✅   |
+| `shared/types.ts`                             | ✅ р.5.1  |   —    |
+| `shared/validation.ts`                        | ✅ р.5.2  |   —    |
+| `shared/statistics.ts`                        | ✅ р.5.3  |   —    |
+| `pages/login.vue`                             | ✅ р.7.4  |   —    |
+| **`pages/register.vue`**                      |    ❌     |   ✅   |
+| **`pages/index.vue`**                         |    ❌     |   ✅   |
+| `pages/dashboard.vue`                         | ✅ р.7.4  |   —    |
+| `pages/cleanings/index.vue`                   | ✅ р.7.4  |   —    |
+| **`pages/cleanings/[id].vue`**                |    ❌     |   ✅   |
+| `pages/statistics.vue`                        | ✅ р.7.4  |   —    |
+| **`components/AppNavbar.vue`**                |    ❌     |   ✅   |
+| `components/CleaningForm.vue`                 | ✅ р.7.5  |   —    |
+| **`components/CleaningTable.vue`**            |    ❌     |   ✅   |
+| `components/StatsCard.vue`                    | ✅ р.7.5  |   —    |
+| `components/StatsChart.vue`                   | ✅ р.7.5  |   —    |
+| **`components/PredictionBadge.vue`**          |    ❌     |   ✅   |
+| `composables/useCleanings.ts`                 | ✅ р.7.6  |   —    |
+| **`composables/useStatistics.ts`**            |    ❌     |   ✅   |
+| `middleware/auth.global.ts`                   | ✅ р.7.2  |   —    |
+| `layouts/default.vue`                         | ✅ р.7.3  |   —    |
+| `layouts/auth.vue`                            | ✅ р.7.3  |   —    |
+| **`app.vue`**                                 |    ❌     |   ✅   |
+| `nuxt.config.ts`                              | ✅ р.7.1  |   —    |
+| **`tailwind.config.ts`**                      |    ❌     |   ⚠️   |
+| **`tsconfig.json`**                           |    ❌     |   ⚠️   |
+| `.env.example`                                |  ✅ р.8   |   —    |
+| `Dockerfile`                                  |  ✅ р.9   |   —    |
+| `docker-compose.yml`                          |  ✅ р.9   |   —    |
+
+**Итого: 14 файлов без кода**, из них 12 точно нужны, 2 — минимальные конфиги.
+
+---
+
+## Код для всех недостающих файлов
+
+### 1. `app.vue` — корневой компонент
+
+Без него Nuxt не знает, с чего начать отрисовку.
+
+```vue
+<!-- app.vue -->
+<template>
+  <NuxtLayout>
+    <NuxtPage />
+  </NuxtLayout>
+</template>
+```
+
+---
+
+### 2. `pages/index.vue` — редирект на dashboard
+
+В спецификации написано: _«Redirect → /dashboard»_.
+
+```vue
+<!-- pages/index.vue -->
+<script setup lang="ts">
+definePageMeta({ layout: false })
+
+navigateTo('/dashboard', { redirectCode: 301 })
+</script>
+
+<template>
+  <div />
+</template>
+```
+
+---
+
+### 3. `pages/register.vue` — страница регистрации
+
+Зеркалит `login.vue`, но с дополнительными полями (имя, подтверждение пароля). Использует `registerSchema` из спецификации.
+
+```vue
+<!-- pages/register.vue -->
+<script setup lang="ts">
+definePageMeta({ layout: 'auth' })
+
+const { fetch: refreshSession } = useUserSession()
+
+const form = reactive({
+  name: '',
+  email: '',
+  password: '',
+  passwordConfirm: '',
+})
+const errors = ref<Record<string, string[]>>({})
+const error = ref('')
+const loading = ref(false)
+
+async function handleRegister() {
+  loading.value = true
+  error.value = ''
+  errors.value = {}
+
+  try {
+    await $fetch('/api/auth/register', {
+      method: 'POST',
+      body: form,
+    })
+    await refreshSession()
+    await navigateTo('/dashboard')
+  } catch (e: any) {
+    if (e.data?.data) {
+      errors.value = e.data.data
+    }
+    error.value = e.data?.statusMessage || 'Ошибка регистрации'
+  } finally {
+    loading.value = false
+  }
+}
+</script>
+
+<template>
+  <form @submit.prevent="handleRegister" class="space-y-4">
+    <UCard>
+      <template #header>
+        <h2 class="text-lg font-semibold">Регистрация</h2>
+      </template>
+
+      <div class="space-y-4">
+        <UFormGroup label="Имя" :error="errors.name?.[0]">
+          <UInput v-model="form.name" required />
+        </UFormGroup>
+
+        <UFormGroup label="Email" :error="errors.email?.[0]">
+          <UInput v-model="form.email" type="email" required />
+        </UFormGroup>
+
+        <UFormGroup label="Пароль" :error="errors.password?.[0]">
+          <UInput v-model="form.password" type="password" required />
+        </UFormGroup>
+
+        <UFormGroup
+          label="Подтвердите пароль"
+          :error="errors.passwordConfirm?.[0]"
+        >
+          <UInput v-model="form.passwordConfirm" type="password" required />
+        </UFormGroup>
+
+        <UAlert v-if="error" color="red" :title="error" />
+      </div>
+
+      <template #footer>
+        <div class="flex flex-col gap-3">
+          <UButton type="submit" block :loading="loading">
+            Зарегистрироваться
+          </UButton>
+          <NuxtLink to="/login" class="text-center text-sm text-primary">
+            Уже есть аккаунт? Войти
+          </NuxtLink>
+        </div>
+      </template>
+    </UCard>
+  </form>
+</template>
+```
+
+---
+
+### 4. `pages/cleanings/[id].vue` — просмотр / редактирование записи
+
+Требование FR-6: _«Редактирование и удаление своих записей»_. Загружает одну запись и показывает форму редактирования.
+
+```vue
+<!-- pages/cleanings/[id].vue -->
+<script setup lang="ts">
+import type { CleaningRecord } from '~/shared/types'
+import { updateCleaningSchema } from '~/shared/validation'
+
+const route = useRoute()
+const router = useRouter()
+const id = route.params.id as string
+
+const { data: cleaning, error: fetchError } = await useFetch<CleaningRecord>(
+  `/api/cleanings/${id}`,
+)
+
+if (fetchError.value) {
+  throw createError({
+    statusCode: 404,
+    statusMessage: 'Запись не найдена',
+  })
+}
+
+const form = reactive({
+  cleaningDate: cleaning.value!.cleaningDate,
+  cleaningType: cleaning.value!.cleaningType,
+  notes: cleaning.value!.notes ?? '',
+})
+
+const errors = ref<Record<string, string[]>>({})
+const loading = ref(false)
+
+async function handleUpdate() {
+  const parsed = updateCleaningSchema.safeParse(form)
+  if (!parsed.success) {
+    errors.value = parsed.error.flatten().fieldErrors
+    return
+  }
+  errors.value = {}
+
+  loading.value = true
+  try {
+    await $fetch(`/api/cleanings/${id}`, {
+      method: 'PUT',
+      body: parsed.data,
+    })
+    await router.push('/cleanings')
+  } catch (e: any) {
+    if (e.data?.data) errors.value = e.data.data
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleDelete() {
+  if (!confirm('Удалить запись?')) return
+  await $fetch(`/api/cleanings/${id}`, { method: 'DELETE' })
+  await router.push('/cleanings')
+}
+</script>
+
+<template>
+  <div>
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-bold">Редактирование записи</h1>
+      <UButton color="red" variant="soft" @click="handleDelete">
+        🗑 Удалить
+      </UButton>
+    </div>
+
+    <UCard>
+      <form @submit.prevent="handleUpdate" class="space-y-4">
+        <UFormGroup label="Дата" :error="errors.cleaningDate?.[0]">
+          <UInput v-model="form.cleaningDate" type="date" />
+        </UFormGroup>
+
+        <UFormGroup label="Тип чистки" :error="errors.cleaningType?.[0]">
+          <URadioGroup
+            v-model="form.cleaningType"
+            :options="[
+              { label: '🔵 От накипи', value: 'DESCALING' },
+              { label: '🟡 От масел', value: 'DEGREASING' },
+              { label: '🟣 Комплексная', value: 'COMPLEX' },
+            ]"
+          />
+        </UFormGroup>
+
+        <UFormGroup label="Заметки" :error="errors.notes?.[0]">
+          <UTextarea v-model="form.notes" :rows="3" />
+        </UFormGroup>
+
+        <div class="flex gap-3">
+          <UButton type="submit" :loading="loading">💾 Сохранить</UButton>
+          <UButton variant="soft" @click="router.push('/cleanings')">
+            Отмена
+          </UButton>
+        </div>
+      </form>
+    </UCard>
+  </div>
+</template>
+```
+
+---
+
+### 5. `server/api/cleanings/[id].get.ts` — получение одной записи
+
+Нужен для страницы `pages/cleanings/[id].vue` — без него нечего загружать.
+
+```typescript
+// server/api/cleanings/[id].get.ts
+
+import { prisma } from '~/server/utils/db'
+
+export default defineEventHandler(async (event) => {
+  const id = getRouterParam(event, 'id')!
+
+  const cleaning = await prisma.cleaning.findUnique({
+    where: { id },
+    include: { user: { select: { id: true, name: true } } },
+  })
+
+  if (!cleaning) {
+    throw createError({ statusCode: 404, statusMessage: 'Запись не найдена' })
+  }
+
+  return {
+    id: cleaning.id,
+    cleaningDate: cleaning.cleaningDate.toISOString().split('T')[0],
+    cleaningType: cleaning.cleaningType,
+    notes: cleaning.notes,
+    createdAt: cleaning.createdAt.toISOString(),
+    user: cleaning.user,
+  }
+})
+```
+
+---
+
+### 6. `server/api/statistics/prediction.get.ts` — эндпоинт прогноза
+
+Упомянут в структуре и требованиях FR-8: _«прогноз следующей чистки»_.
+
+```typescript
+// server/api/statistics/prediction.get.ts
+
+import { prisma } from '~/server/utils/db'
+import { calculateStats, filterByEffectiveType } from '~/shared/statistics'
+import type { CleaningType } from '~/shared/types'
+import { cleaningTypeEnum } from '~/shared/validation'
+
+export default defineEventHandler(async (event) => {
+  const query = getQuery(event)
+
+  const parsed = cleaningTypeEnum.safeParse(query.type)
+  if (!parsed.success) {
+    throw createError({
+      statusCode: 400,
+      statusMessage:
+        'Параметр type обязателен: DESCALING | DEGREASING | COMPLEX',
+    })
+  }
+
+  const type: CleaningType = parsed.data
+
+  const cleanings = await prisma.cleaning.findMany({
+    orderBy: { cleaningDate: 'asc' },
+    select: { cleaningDate: true, cleaningType: true },
+  })
+
+  const relevant = filterByEffectiveType(cleanings, type)
+  const dates = relevant.map((c) => c.cleaningDate)
+  const stats = calculateStats(dates, type)
+
+  if (!stats.prediction) {
+    return {
+      cleaningType: type,
+      prediction: null,
+      message: 'Недостаточно данных для прогноза (нужно минимум 2 чистки)',
+    }
+  }
+
+  return {
+    cleaningType: type,
+    prediction: stats.prediction,
+  }
+})
+```
+
+---
+
+### 7. `server/utils/auth.ts` — утилиты аутентификации
+
+Упомянут в структуре как _«Утилиты хэширования, сессий»_. Централизует работу с паролями.
+
+```typescript
+// server/utils/auth.ts
+
+import bcrypt from 'bcrypt'
+
+const BCRYPT_ROUNDS = 12
+
+export async function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, BCRYPT_ROUNDS)
+}
+
+export async function verifyPassword(
+  password: string,
+  hash: string,
+): Promise<boolean> {
+  return bcrypt.compare(password, hash)
+}
+```
+
+---
+
+### 8. `components/AppNavbar.vue` — навигация
+
+Используется в `layouts/default.vue`. Без неё — сломанный layout.
+
+```vue
+<!-- components/AppNavbar.vue -->
+<script setup lang="ts">
+const { user, clear: logout } = useUserSession()
+
+async function handleLogout() {
+  await $fetch('/api/auth/logout', { method: 'POST' })
+  await logout()
+  await navigateTo('/login')
+}
+
+const links = [
+  { label: '📊 Dashboard', to: '/dashboard' },
+  { label: '📋 Журнал', to: '/cleanings' },
+  { label: '📈 Статистика', to: '/statistics' },
+]
+</script>
+
+<template>
+  <nav class="bg-white border-b border-stone-200">
+    <div class="container mx-auto px-4 flex items-center justify-between h-14">
+      <div class="flex items-center gap-6">
+        <NuxtLink to="/dashboard" class="font-bold text-lg">
+          ☕ CoffeeClean
+        </NuxtLink>
+        <div class="flex gap-4">
+          <NuxtLink
+            v-for="link in links"
+            :key="link.to"
+            :to="link.to"
+            class="text-sm text-stone-600 hover:text-stone-900"
+            active-class="text-stone-900 font-semibold"
+          >
+            {{ link.label }}
+          </NuxtLink>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-4">
+        <span class="text-sm text-stone-500">{{ user?.name }}</span>
+        <UButton size="xs" variant="soft" @click="handleLogout">
+          Выйти
+        </UButton>
+      </div>
+    </div>
+  </nav>
+</template>
+```
+
+---
+
+### 9. `components/CleaningTable.vue` — таблица чисток
+
+Используется в `pages/cleanings/index.vue`. Без неё список не отображается.
+
+```vue
+<!-- components/CleaningTable.vue -->
+<script setup lang="ts">
+import { CLEANING_TYPE_LABELS, CLEANING_TYPE_ICONS } from '~/shared/types'
+import type { CleaningRecord } from '~/shared/types'
+
+defineProps<{
+  records: CleaningRecord[]
+}>()
+
+const emit = defineEmits<{
+  delete: [id: string]
+}>()
+
+const { user } = useUserSession()
+
+const columns = [
+  { key: 'cleaningDate', label: 'Дата' },
+  { key: 'cleaningType', label: 'Тип' },
+  { key: 'notes', label: 'Заметки' },
+  { key: 'user', label: 'Автор' },
+  { key: 'actions', label: '' },
+]
+</script>
+
+<template>
+  <UTable :columns="columns" :rows="records">
+    <template #cleaningDate-data="{ row }">
+      <NuxtLink
+        :to="`/cleanings/${row.id}`"
+        class="text-primary hover:underline font-medium"
+      >
+        {{ row.cleaningDate }}
+      </NuxtLink>
+    </template>
+
+    <template #cleaningType-data="{ row }">
+      <UBadge variant="soft">
+        {{
+          CLEANING_TYPE_ICONS[
+            row.cleaningType as keyof typeof CLEANING_TYPE_ICONS
+          ]
+        }}
+        {{
+          CLEANING_TYPE_LABELS[
+            row.cleaningType as keyof typeof CLEANING_TYPE_LABELS
+          ]
+        }}
+      </UBadge>
+    </template>
+
+    <template #notes-data="{ row }">
+      <span class="text-sm text-stone-500 truncate max-w-xs block">
+        {{ row.notes || '—' }}
+      </span>
+    </template>
+
+    <template #user-data="{ row }">
+      <span class="text-sm">{{ row.user.name }}</span>
+    </template>
+
+    <template #actions-data="{ row }">
+      <div v-if="row.user.id === user?.id" class="flex gap-2 justify-end">
+        <UButton size="xs" variant="soft" :to="`/cleanings/${row.id}`">
+          ✏️
+        </UButton>
+        <UButton
+          size="xs"
+          variant="soft"
+          color="red"
+          @click="emit('delete', row.id)"
+        >
+          🗑
+        </UButton>
+      </div>
+    </template>
+  </UTable>
+</template>
+```
+
+---
+
+### 10. `components/PredictionBadge.vue` — бейдж прогноза
+
+Используется в `StatsCard.vue`. Без него — ошибка рендеринга.
+
+```vue
+<!-- components/PredictionBadge.vue -->
+<script setup lang="ts">
+const props = defineProps<{
+  prediction: {
+    date: string
+    daysUntil: number
+    isOverdue: boolean
+  }
+}>()
+
+const color = computed(() => {
+  if (props.prediction.isOverdue) return 'red'
+  if (props.prediction.daysUntil <= 7) return 'orange'
+  return 'green'
+})
+
+const label = computed(() => {
+  if (props.prediction.isOverdue) {
+    return `Просрочено на ${Math.abs(props.prediction.daysUntil)} дн.`
+  }
+  return `Через ${props.prediction.daysUntil} дн.`
+})
+</script>
+
+<template>
+  <div class="flex items-center gap-2">
+    <UBadge :color="color" variant="soft">
+      {{ label }}
+    </UBadge>
+    <span class="text-sm text-stone-500">{{ prediction.date }}</span>
+  </div>
+</template>
+```
+
+---
+
+### 11. `composables/useStatistics.ts` — загрузка статистики
+
+Упомянут в структуре как _«Загрузка и форматирование статистики»_.
+
+```typescript
+// composables/useStatistics.ts
+
+import type { CleaningStats, CleaningType } from '~/shared/types'
+
+export function useStatistics() {
+  const stats = ref<CleaningStats[]>([])
+  const loading = ref(false)
+
+  async function fetchSummary(type?: CleaningType) {
+    loading.value = true
+    try {
+      const query: Record<string, string> = {}
+      if (type) query.type = type
+
+      stats.value = await $fetch<CleaningStats[]>('/api/statistics/summary', {
+        query,
+      })
+      return stats.value
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function fetchPrediction(type: CleaningType) {
+    return $fetch<{
+      cleaningType: CleaningType
+      prediction: CleaningStats['prediction']
+    }>('/api/statistics/prediction', {
+      query: { type },
+    })
+  }
+
+  return { stats, loading, fetchSummary, fetchPrediction }
+}
+```
+
+---
+
+### 12. `prisma/seed.ts` — начальные данные
+
+Упомянут в командах (`npx prisma db seed`). Создаёт тестового пользователя и несколько записей для проверки.
+
+```typescript
+// prisma/seed.ts
+
+import { PrismaClient } from '@prisma/client'
+import bcrypt from 'bcrypt'
+
+const prisma = new PrismaClient()
+
+async function main() {
+  // Тестовый пользователь
+  const passwordHash = await bcrypt.hash('password123', 12)
+
+  const user = await prisma.user.upsert({
+    where: { email: 'test@example.com' },
+    update: {},
+    create: {
+      name: 'Тестовый пользователь',
+      email: 'test@example.com',
+      passwordHash,
+    },
+  })
+
+  console.log(`✅ Пользователь создан: ${user.email}`)
+
+  // Тестовые чистки за последние полгода
+  const cleanings = [
+    { daysAgo: 180, type: 'DESCALING' },
+    { daysAgo: 150, type: 'DEGREASING' },
+    { daysAgo: 120, type: 'COMPLEX' },
+    { daysAgo: 90, type: 'DESCALING' },
+    { daysAgo: 60, type: 'DEGREASING' },
+    { daysAgo: 30, type: 'DESCALING' },
+    { daysAgo: 14, type: 'DEGREASING' },
+  ] as const
+
+  for (const c of cleanings) {
+    const date = new Date()
+    date.setDate(date.getDate() - c.daysAgo)
+    date.setHours(0, 0, 0, 0)
+
+    await prisma.cleaning.upsert({
+      where: {
+        userId_cleaningDate_cleaningType: {
+          userId: user.id,
+          cleaningDate: date,
+          cleaningType: c.type,
+        },
+      },
+      update: {},
+      create: {
+        userId: user.id,
+        cleaningDate: date,
+        cleaningType: c.type,
+        notes: `Тестовая запись — ${c.type}`,
+      },
+    })
+  }
+
+  console.log(`✅ Создано ${cleanings.length} тестовых записей`)
+}
+
+main()
+  .catch((e) => {
+    console.error(e)
+    process.exit(1)
+  })
+  .finally(async () => {
+    await prisma.$disconnect()
+  })
+```
+
+Также в `package.json` нужно добавить секцию для запуска сида:
+
+```json
+{
+  "prisma": {
+    "seed": "npx tsx prisma/seed.ts"
+  }
+}
+```
+
+---
+
+### 13. `tailwind.config.ts` — конфигурация Tailwind
+
+Nuxt UI включает Tailwind автоматически. Минимальный конфиг:
+
+```typescript
+// tailwind.config.ts
+
+import type { Config } from 'tailwindcss'
+
+export default <Config>{
+  content: [], // Nuxt UI расширяет автоматически
+  theme: {
+    extend: {},
+  },
+}
+```
+
+---
+
+### 14. `tsconfig.json` — настройки TypeScript
+
+Nuxt генерирует свой `.nuxt/tsconfig.json`, но корневой файл нужен, чтобы IDE (VS Code) всё подхватил:
+
+```json
+{
+  "extends": "./.nuxt/tsconfig.json"
+}
+```
+
+---
+
+## Итог
+
+Всего в спецификации **38 файлов** (не считая автогенерируемых `migrations/`). Код был предоставлен для **24 из них**. Я дописал оставшиеся **14 файлов**:
+
+| #   | Файл                                      | Зачем нужен                                       |
+| --- | ----------------------------------------- | ------------------------------------------------- |
+| 1   | `app.vue`                                 | Точка входа — без него Nuxt не рендерит страницы  |
+| 2   | `pages/index.vue`                         | Редирект `/` → `/dashboard`                       |
+| 3   | `pages/register.vue`                      | Страница регистрации (FR-1)                       |
+| 4   | `pages/cleanings/[id].vue`                | Просмотр и редактирование записи (FR-6)           |
+| 5   | `server/api/cleanings/[id].get.ts`        | API: получить одну запись (нужен для п.4)         |
+| 6   | `server/api/statistics/prediction.get.ts` | API: прогноз следующей чистки (FR-8)              |
+| 7   | `server/utils/auth.ts`                    | Централизация хэширования паролей                 |
+| 8   | `components/AppNavbar.vue`                | Навигация (используется в layout)                 |
+| 9   | `components/CleaningTable.vue`            | Таблица чисток (используется на странице журнала) |
+| 10  | `components/PredictionBadge.vue`          | Бейдж прогноза (используется в StatsCard)         |
+| 11  | `composables/useStatistics.ts`            | Composable для загрузки статистики                |
+| 12  | `prisma/seed.ts`                          | Тестовые данные для разработки                    |
+| 13  | `tailwind.config.ts`                      | Минимальный конфиг стилей                         |
+| 14  | `tsconfig.json`                           | Настройки TypeScript для IDE                      |
+
+Теперь спецификация полностью покрывает все файлы из структуры проекта. Можно приступать к сборке.
